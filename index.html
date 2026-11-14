@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
+<title>Approve</title>
+<style>
+:root{--bg:#f6f5f1;--fg:#1b1a18;--muted:#68645c;--card:#fff;--line:#d9d5cc;--accent:#1f5fbf;--on:#fff;--ok:#1a7f4b;--bad:#b3261e}
+@media (prefers-color-scheme:dark){:root{--bg:#161513;--fg:#eeebe4;--muted:#a39e93;--card:#201f1c;--line:#39362f;--accent:#8ab4f8;--on:#10131a;--ok:#6fd39a;--bad:#f2867e}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:600px;margin:0 auto;padding:28px 16px 48px}
+h1{font-size:22px;margin:0 0 4px}
+h2{font-size:16px;margin:0 0 8px}
+p{margin:0 0 12px}
+.muted{color:var(--muted);font-size:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin:16px 0}
+dl{margin:0 0 14px}
+dt{font-size:13px;color:var(--muted)}
+dd{margin:0 0 10px;font:15px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow-wrap:anywhere}
+button{font:inherit;padding:11px 16px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:var(--on);cursor:pointer}
+button.plain{background:transparent;color:var(--accent)}
+button:disabled{opacity:.45;cursor:default}
+textarea{width:100%;min-height:150px;margin:12px 0 8px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.msg{margin:10px 0 0;font-size:14px;overflow-wrap:anywhere}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+[hidden]{display:none}
+</style>
+</head>
+<body>
+<main>
+  <h1>Approve</h1>
+  <p class="muted">This page asks your device to sign one thing with a key that stays on your device. It sends nothing anywhere: you copy the result yourself.</p>
+
+  <section class="card" id="approve" hidden>
+    <h2>Sign this?</h2>
+    <dl>
+      <dt>Name</dt><dd id="name"></dd>
+      <dt>Fingerprint (sha256)</dt><dd id="sha"></dd>
+    </dl>
+    <p class="muted">Check both against what you were given. Sign only if they are the same.</p>
+    <button id="signBtn">Sign with this device</button>
+    <div class="msg" id="signMsg"></div>
+    <div id="signOut" hidden>
+      <textarea id="signText" readonly></textarea>
+      <button class="plain" id="signCopy">Copy</button>
+    </div>
+  </section>
+
+  <section class="card" id="nothing" hidden>
+    <h2>Nothing to sign</h2>
+    <p class="muted">Open this page from a link that names what is to be signed.</p>
+  </section>
+
+  <section class="card">
+    <h2>First time on a new set of devices</h2>
+    <p class="muted">Makes the key. Do this once, then copy the result to whoever needs the public half. Making a second key does not remove the first.</p>
+    <button class="plain" id="makeBtn">Make a key</button>
+    <div class="msg" id="makeMsg"></div>
+    <div id="makeOut" hidden>
+      <textarea id="makeText" readonly></textarea>
+      <button class="plain" id="makeCopy">Copy</button>
+    </div>
+  </section>
+</main>
+<script>
+(function(){
+  'use strict';
+  var PREFIX = '2x-approve-v1';
+  var $ = function(id){ return document.getElementById(id); };
+  function b64(buf){ var s='', a=new Uint8Array(buf); for(var i=0;i<a.length;i++) s+=String.fromCharCode(a[i]); return btoa(s); }
+  function b64url(buf){ return b64(buf).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
+  function say(el, ok, text){ el.className='msg '+(ok?'ok':'bad'); el.textContent=text; }
+  function copier(btn, area){ btn.addEventListener('click', function(){
+    area.select();
+    (navigator.clipboard ? navigator.clipboard.writeText(area.value) : Promise.reject()).then(function(){ btn.textContent='Copied'; }, function(){ document.execCommand('copy'); btn.textContent='Copied'; });
+  }); }
+  copier($('signCopy'), $('signText')); copier($('makeCopy'), $('makeText'));
+
+  // What is to be signed comes from the link: #name=...&sha256=...
+  var q = new URLSearchParams(location.hash.replace(/^#/, ''));
+  var name = q.get('name') || '', sha = (q.get('sha256') || '').toLowerCase();
+  var valid = /^[a-z0-9][a-z0-9._-]{0,60}$/.test(name) && /^[0-9a-f]{64}$/.test(sha);
+  if (valid){ $('name').textContent = name; $('sha').textContent = sha; $('approve').hidden = false; }
+  else { $('nothing').hidden = false; }
+  window.addEventListener('hashchange', function(){ location.reload(); });
+
+  $('signBtn').addEventListener('click', function(){
+    if (!window.PublicKeyCredential){ say($('signMsg'), false, 'This browser cannot use a device key.'); return; }
+    var text = new TextEncoder().encode(PREFIX + '\n' + name + '\n' + sha + '\n');
+    crypto.subtle.digest('SHA-256', text).then(function(challenge){
+      return navigator.credentials.get({ publicKey: { challenge: challenge, userVerification: 'required', timeout: 120000 } });
+    }).then(function(a){
+      var r = a.response;
+      $('signText').value = 'step: ' + name + '\nsha256: ' + sha +
+        '\nauthenticatorData: ' + b64url(r.authenticatorData) +
+        '\nclientDataJSON: ' + b64url(r.clientDataJSON) +
+        '\nsignature: ' + b64url(r.signature) + '\n';
+      $('signOut').hidden = false;
+      say($('signMsg'), true, 'Signed. Copy the text below and paste it where it was asked for.');
+    }).catch(function(e){ say($('signMsg'), false, 'Not signed: ' + e.name + ' - ' + e.message); });
+  });
+
+  $('makeBtn').addEventListener('click', function(){
+    if (!window.PublicKeyCredential){ say($('makeMsg'), false, 'This browser cannot use a device key.'); return; }
+    var rnd = function(n){ var a=new Uint8Array(n); crypto.getRandomValues(a); return a; };
+    navigator.credentials.create({ publicKey: {
+      rp: { name: 'Approve' },
+      user: { id: rnd(16), name: 'approver', displayName: 'Approver' },
+      challenge: rnd(32),
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+      authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
+      attestation: 'none', timeout: 120000
+    }}).then(function(c){
+      var spki = c.response.getPublicKey ? c.response.getPublicKey() : null;
+      if (!spki){ say($('makeMsg'), false, 'Key made, but this browser will not show its public half. Use a newer browser.'); return; }
+      var pem = '-----BEGIN PUBLIC KEY-----\n' + b64(spki).match(/.{1,64}/g).join('\n') + '\n-----END PUBLIC KEY-----';
+      $('makeText').value = pem + '\nrp id: ' + location.hostname + '\norigin: ' + location.origin + '\nalgorithm: ' + c.response.getPublicKeyAlgorithm() + '\n';
+      $('makeOut').hidden = false;
+      say($('makeMsg'), true, 'Key made. Copy the text below.');
+    }).catch(function(e){ say($('makeMsg'), false, 'No key made: ' + e.name + ' - ' + e.message); });
+  });
+})();
+</script>
+</body>
+</html>
